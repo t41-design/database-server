@@ -7,16 +7,13 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-# مسار قاعدة البيانات
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE = os.path.join(BASE_DIR, "database.db")
 
 def init_db():
-    """تهيئة قاعدة البيانات"""
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
     
-    # جدول المستخدمين
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,7 +24,6 @@ def init_db():
         )
     ''')
     
-    # إضافة بعض البيانات التجريبية
     try:
         cursor.execute("INSERT OR IGNORE INTO users (name, email, phone) VALUES (?, ?, ?)",
                       ('أحمد محمد', 'ahmed@example.com', '0501234567'))
@@ -39,7 +35,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# استدعاء تهيئة قاعدة البيانات عند البدء
 init_db()
 
 @app.route('/')
@@ -53,11 +48,9 @@ def home():
             "بحث": "/api/users/search?q=اسم (GET)",
             "حذف": "/api/users/1 (DELETE)",
             "التحديث": "/api/users/1 (PUT)"
-        },
-        "author": "Your Database App"
+        }
     })
 
-# 📍 جلب جميع المستخدمين
 @app.route('/api/users', methods=['GET'])
 def get_users():
     try:
@@ -83,26 +76,22 @@ def get_users():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 📍 إضافة مستخدم جديد
 @app.route('/api/users', methods=['POST'])
 def add_user():
     try:
         data = request.get_json()
         
-        # التحقق من البيانات
         if not data or 'name' not in data or 'email' not in data:
             return jsonify({"error": "الاسم والبريد الإلكتروني مطلوبان"}), 400
         
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
-        # التحقق من عدم تكرار البريد
         cursor.execute("SELECT id FROM users WHERE email = ?", (data['email'],))
         if cursor.fetchone():
             conn.close()
             return jsonify({"error": "البريد الإلكتروني موجود بالفعل"}), 400
         
-        # إضافة المستخدم
         cursor.execute('''
             INSERT INTO users (name, email, phone)
             VALUES (?, ?, ?)
@@ -121,7 +110,6 @@ def add_user():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 📍 حذف مستخدم
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
     try:
@@ -145,7 +133,6 @@ def delete_user(user_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 📍 تحديث بيانات مستخدم
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
 def update_user(user_id):
     try:
@@ -154,13 +141,11 @@ def update_user(user_id):
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
-        # التحقق من وجود المستخدم
         cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({"error": "المستخدم غير موجود"}), 404
         
-        # تحديث البيانات
         cursor.execute('''
             UPDATE users 
             SET name = ?, email = ?, phone = ?
@@ -178,7 +163,6 @@ def update_user(user_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 📍 بحث عن مستخدمين
 @app.route('/api/users/search', methods=['GET'])
 def search_users():
     try:
@@ -211,7 +195,6 @@ def search_users():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 📍 الحالة الصحية للخادم
 @app.route('/api/health', methods=['GET'])
 def health_check():
     try:
@@ -233,6 +216,4 @@ def health_check():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-Add app.py - main server file
-
     app.run(host='0.0.0.0', port=port, debug=False)
