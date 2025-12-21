@@ -1,347 +1,370 @@
 from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
+from datetime import datetime
 import os
-import sqlite3
-import hashlib
-import jwt
-import datetime
-from functools import wraps
 
 app = Flask(__name__)
-CORS(app)
-app.config['SECRET_KEY'] = 'your-secret-key-here'  # غير هذا في الإنتاج
+CORS(app)  # تمكين CORS للاتصال من التطبيق
 
-# قاعدة البيانات
-DATABASE = 'database.db'
+# إعداد قاعدة البيانات
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
-def init_db():
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
+# ========== تعريف النماذج ==========
+
+# نموذج المستخدم
+class User(db.Model):
+    __tablename__ = 'users'
     
-    # جدول المستخدمين
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            email TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            full_name TEXT,
-            phone TEXT,
-            profession TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(100), unique=True, nullable=False)
+    phone = db.Column(db.String(20))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # جدول المنشورات
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS posts (
-            post_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            category TEXT,
-            phone TEXT,
-            profession TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    ''')
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'email': self.email,
+            'phone': self.phone,
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+# نموذج المنشور (الجديد)
+class Post(db.Model):
+    __tablename__ = 'posts'
     
-    conn.commit()
-    conn.close()
-
-# تهيئة قاعدة البيانات
-init_db()
-
-# ========== دوال المساعدة ==========
-
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def verify_password(password, hashed):
-    return hash_password(password) == hashed
-
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = request.headers.get('Authorization')
-        
-        if not token:
-            return jsonify({'error': 'Token is missing'}), 401
-        
-        try:
-            data = jwt.decode(token.split()[1], app.config['SECRET_KEY'], algorithms=["HS256"])
-            current_user = data['user_id']
-        except:
-            return jsonify({'error': 'Token is invalid'}), 401
-        
-        return f(current_user, *args, **kwargs)
+    id = db.Column(db.Integer, primary_key=True)
+    user_email = db.Column(db.String(100), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    category = db.Column(db.String(50))
+    phone = db.Column(db.String(20))
+    profession = db.Column(db.String(100))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    return decorated
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_email': self.user_email,
+            'title': self.title,
+            'content': self.content,
+            'category': self.category,
+            'phone': self.phone,
+            'profession': self.profession,
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        }
 
-# ========== API Authentication ==========
+# ========== إنشاء الجداول ==========
+with app.app_context():
+    db.create_all()
+    print("✅ تم إنشاء الجداول بنجاح!")
 
-@app.route('/api/auth/register', methods=['POST'])
-def register():
-    try:
-        data = request.get_json()
-        
-        required_fields = ['email', 'password', 'full_name']
-        for field in required_fields:
-            if field not in data or not data[field]:
-                return jsonify({'error': f'{field} is required'}), 400
-        
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        
-        # التحقق من عدم تكرار البريد
-        cursor.execute("SELECT id FROM users WHERE email = ?", (data['email'],))
-        if cursor.fetchone():
-            conn.close()
-            return jsonify({'error': 'Email already exists'}), 400
-        
-        # إنشاء المستخدم
-        hashed_password = hash_password(data['password'])
-        cursor.execute('''
-            INSERT INTO users (email, password, full_name, phone, profession, username)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            data['email'],
-            hashed_password,
-            data['full_name'],
-            data.get('phone', ''),
-            data.get('profession', ''),
-            data.get('username', '')
-        ))
-        
-        conn.commit()
-        user_id = cursor.lastrowid
-        conn.close()
-        
-        # إنشاء token
-        token = jwt.encode({
-            'user_id': user_id,
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-        }, app.config['SECRET_KEY'])
-        
-        return jsonify({
-            'success': True,
-            'message': 'تم التسجيل بنجاح',
-            'token': token,
-            'user': {
-                'id': user_id,
-                'email': data['email'],
-                'full_name': data['full_name'],
-                'phone': data.get('phone', ''),
-                'profession': data.get('profession', '')
-            }
-        }), 201
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+# ========== نقاط الوصول (Routes) ==========
 
-@app.route('/api/auth/login', methods=['POST'])
-def login():
-    try:
-        data = request.get_json()
-        
-        if 'email' not in data or 'password' not in data:
-            return jsonify({'error': 'Email and password are required'}), 400
-        
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM users WHERE email = ?", (data['email'],))
-        user = cursor.fetchone()
-        conn.close()
-        
-        if not user:
-            return jsonify({'error': 'Invalid credentials'}), 401
-        
-        # التحقق من كلمة المرور
-        if not verify_password(data['password'], user[3]):  # العمود 3 هو password
-            return jsonify({'error': 'Invalid credentials'}), 401
-        
-        # إنشاء token
-        token = jwt.encode({
-            'user_id': user[0],  # العمود 0 هو id
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-        }, app.config['SECRET_KEY'])
-        
-        return jsonify({
-            'success': True,
-            'message': 'تم تسجيل الدخول بنجاح',
-            'token': token,
-            'user': {
-                'id': user[0],
-                'email': user[2],
-                'full_name': user[4],
-                'phone': user[5],
-                'profession': user[6]
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ========== Posts API ==========
-
-@app.route('/api/posts', methods=['GET'])
-def get_posts():
-    try:
-        conn = sqlite3.connect(DATABASE)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT p.*, u.full_name, u.email 
-            FROM posts p
-            JOIN users u ON p.user_id = u.id
-            ORDER BY p.created_at DESC
-        ''')
-        
-        posts = []
-        for row in cursor.fetchall():
-            posts.append(dict(row))
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'count': len(posts),
-            'posts': posts
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/posts', methods=['POST'])
-@token_required
-def create_post(current_user):
-    try:
-        data = request.get_json()
-        
-        if 'title' not in data or 'content' not in data:
-            return jsonify({'error': 'Title and content are required'}), 400
-        
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO posts (user_id, title, content, category, phone, profession)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            current_user,
-            data['title'],
-            data['content'],
-            data.get('category', ''),
-            data.get('phone', ''),
-            data.get('profession', '')
-        ))
-        
-        conn.commit()
-        post_id = cursor.lastrowid
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'message': 'تم إنشاء المنشور بنجاح',
-            'post_id': post_id
-        }), 201
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/posts/search', methods=['GET'])
-def search_posts():
-    try:
-        query = request.args.get('q', '')
-        category = request.args.get('category', '')
-        
-        conn = sqlite3.connect(DATABASE)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        sql = '''
-            SELECT p.*, u.full_name, u.email 
-            FROM posts p
-            JOIN users u ON p.user_id = u.id
-            WHERE (p.title LIKE ? OR p.content LIKE ? OR p.profession LIKE ?)
-        '''
-        params = [f'%{query}%', f'%{query}%', f'%{query}%']
-        
-        if category:
-            sql += ' AND p.category = ?'
-            params.append(category)
-        
-        sql += ' ORDER BY p.created_at DESC'
-        
-        cursor.execute(sql, params)
-        
-        posts = []
-        for row in cursor.fetchall():
-            posts.append(dict(row))
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'count': len(posts),
-            'posts': posts
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ========== User API ==========
-
-@app.route('/api/users/me', methods=['GET'])
-@token_required
-def get_current_user(current_user):
-    try:
-        conn = sqlite3.connect(DATABASE)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM users WHERE id = ?", (current_user,))
-        user = cursor.fetchone()
-        conn.close()
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        return jsonify({
-            'success': True,
-            'user': {
-                'id': user['id'],
-                'email': user['email'],
-                'full_name': user['full_name'],
-                'phone': user['phone'],
-                'profession': user['profession'],
-                'created_at': user['created_at']
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ========== Main ==========
-
+# صفحة البداية
 @app.route('/')
 def home():
     return jsonify({
-        "status": "success",
         "message": "🚀 خادم قاعدة البيانات يعمل بنجاح!",
-        "version": "2.0",
-        "endpoints": {
-            "التسجيل": "/api/auth/register (POST)",
-            "تسجيل الدخول": "/api/auth/login (POST)",
-            "المنشورات": "/api/posts (GET/POST)",
-            "بحث المنشورات": "/api/posts/search (GET)",
-            "بياناتي": "/api/users/me (GET)"
-        }
+        "status": "healthy",
+        "database": "connected",
+        "timestamp": datetime.utcnow().isoformat()
     })
 
+# ========== نقاط وصول المستخدمين ==========
+
+# جلب جميع المستخدمين
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    try:
+        users = User.query.all()
+        return jsonify({
+            "success": True,
+            "count": len(users),
+            "users": [user.to_dict() for user in users]
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# إضافة مستخدم جديد
+@app.route('/api/users', methods=['POST'])
+def add_user():
+    try:
+        data = request.json
+        
+        # التحقق من البيانات المطلوبة
+        if not data.get('name') or not data.get('email'):
+            return jsonify({
+                "success": False,
+                "error": "الاسم والبريد الإلكتروني مطلوبان"
+            }), 400
+        
+        # التحقق من عدم وجود البريد مسبقاً
+        existing_user = User.query.filter_by(email=data['email']).first()
+        if existing_user:
+            return jsonify({
+                "success": False,
+                "error": "البريد الإلكتروني مستخدم مسبقاً"
+            }), 409
+        
+        # إنشاء المستخدم
+        user = User(
+            name=data['name'],
+            email=data['email'],
+            phone=data.get('phone', '')
+        )
+        
+        db.session.add(user)
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "تم إضافة المستخدم بنجاح",
+            "user": user.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# البحث في المستخدمين
+@app.route('/api/users/search', methods=['GET'])
+def search_users():
+    try:
+        query = request.args.get('q', '')
+        
+        if not query:
+            return jsonify({
+                "success": True,
+                "count": 0,
+                "users": []
+            })
+        
+        # البحث في الأسماء والبريد
+        users = User.query.filter(
+            (User.name.ilike(f'%{query}%')) | 
+            (User.email.ilike(f'%{query}%'))
+        ).all()
+        
+        return jsonify({
+            "success": True,
+            "count": len(users),
+            "users": [user.to_dict() for user in users]
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ========== نقاط وصول المنشورات (الجديدة) ==========
+
+# جلب جميع المنشورات
+@app.route('/api/posts', methods=['GET'])
+def get_posts():
+    try:
+        posts = Post.query.order_by(Post.created_at.desc()).all()
+        return jsonify({
+            "success": True,
+            "count": len(posts),
+            "posts": [post.to_dict() for post in posts]
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# إضافة منشور جديد
+@app.route('/api/posts', methods=['POST'])
+def add_post():
+    try:
+        data = request.json
+        
+        # التحقق من البيانات المطلوبة
+        required_fields = ['user_email', 'title', 'content']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({
+                    "success": False,
+                    "error": f"حقل {field} مطلوب"
+                }), 400
+        
+        # إنشاء المنشور
+        post = Post(
+            user_email=data['user_email'],
+            title=data['title'],
+            content=data['content'],
+            category=data.get('category', ''),
+            phone=data.get('phone', ''),
+            profession=data.get('profession', '')
+        )
+        
+        db.session.add(post)
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "تم نشر المنشور بنجاح",
+            "post": post.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# البحث في المنشورات
+@app.route('/api/posts/search', methods=['GET', 'POST'])
+def search_posts():
+    try:
+        if request.method == 'POST':
+            data = request.json
+            query = data.get('query', '')
+        else:
+            query = request.args.get('q', '')
+        
+        if not query:
+            return jsonify({
+                "success": True,
+                "count": 0,
+                "results": []
+            })
+        
+        # البحث في العنوان والمحتوى والتصنيف
+        posts = Post.query.filter(
+            (Post.title.ilike(f'%{query}%')) | 
+            (Post.content.ilike(f'%{query}%')) |
+            (Post.category.ilike(f'%{query}%')) |
+            (Post.profession.ilike(f'%{query}%'))
+        ).order_by(Post.created_at.desc()).all()
+        
+        return jsonify({
+            "success": True,
+            "count": len(posts),
+            "results": [post.to_dict() for post in posts]
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# جلب منشورات مستخدم معين
+@app.route('/api/posts/user/<email>', methods=['GET'])
+def get_user_posts(email):
+    try:
+        posts = Post.query.filter_by(user_email=email)\
+                 .order_by(Post.created_at.desc()).all()
+        
+        return jsonify({
+            "success": True,
+            "count": len(posts),
+            "posts": [post.to_dict() for post in posts]
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ========== نقاط وخاصة بالتطبيق ==========
+
+# تسجيل الدخول (مبسط)
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    try:
+        data = request.json
+        email = data.get('email', '')
+        
+        if not email:
+            return jsonify({"success": False, "error": "البريد مطلوب"}), 400
+        
+        # البحث عن المستخدم
+        user = User.query.filter_by(email=email).first()
+        
+        if not user:
+            # إذا لم يكن موجوداً، ننشئه (تسجيل تلقائي)
+            user = User(
+                name=email.split('@')[0],
+                email=email,
+                phone=''
+            )
+            db.session.add(user)
+            db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "user": user.to_dict(),
+            "token": f"token_{user.id}"
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# التسجيل (مخصص للتطبيق)
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    try:
+        data = request.json
+        
+        # التحقق من البيانات
+        if not data.get('full_name') or not data.get('email'):
+            return jsonify({
+                "success": False,
+                "error": "الاسم الكامل والبريد مطلوبان"
+            }), 400
+        
+        # التحقق من عدم وجود البريد
+        existing_user = User.query.filter_by(email=data['email']).first()
+        if existing_user:
+            return jsonify({
+                "success": False,
+                "error": "البريد مستخدم مسبقاً"
+            }), 409
+        
+        # إنشاء المستخدم
+        user = User(
+            name=data['full_name'],
+            email=data['email'],
+            phone=data.get('phone', '')
+        )
+        
+        db.session.add(user)
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "تم إنشاء الحساب بنجاح",
+            "user": user.to_dict(),
+            "token": f"token_{user.id}"
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ========== نقطة فحص الصحة ==========
+@app.route('/health', methods=['GET'])
+def health_check():
+    try:
+        # محاولة الاتصال بقاعدة البيانات
+        user_count = User.query.count()
+        post_count = Post.query.count()
+        
+        return jsonify({
+            "database": "connected",
+            "server": "Python Flask with Posts API",
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "stats": {
+                "users_count": user_count,
+                "posts_count": post_count
+            }
+        })
+    except Exception as e:
+        return jsonify({
+            "database": "disconnected",
+            "server": "Python Flask",
+            "status": "unhealthy",
+            "error": str(e)
+        }), 500
+
+# ========== تشغيل الخادم ==========
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    port = int(os.environ.get('PORT', 5050))
+    app.run(host='0.0.0.0', port=port, debug=True)
